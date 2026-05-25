@@ -1,0 +1,98 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: "Cleaned customer records, one row per customer_id."
+    columns:
+      - name: customer_id
+        description: "Primary key — unique per order's customer record."
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_unique_id
+        description: "Identifies the actual person; one person may have multiple customer_ids."
+        data_tests:
+          - not_null
+
+  - name: stg_orders
+    description: "Cleaned orders, one row per order."
+    columns:
+      - name: order_id
+        description: "Primary key — one row per order."
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "Foreign key to stg_customers."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: order_status
+        description: "Current status of the order."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['delivered', 'shipped', 'canceled', 'unavailable', 'invoiced', 'processing', 'created', 'approved']
+  
+  - name: stg_order_items
+    description: "Cleaned order line items. Grain: one row per order_id + order_item_id. One row per product per order."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - order_id
+              - order_item_id
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+      - name: product_id
+        data_tests:
+          - not_null
+      - name: price
+        data_tests:
+          - not_null
+
+  - name: stg_order_payments
+    description: "Payment records. Multiple payment rows possible per order."
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+
+  - name: stg_products
+    description: "Cleaned product catalog, one row per product_id."
+    columns:
+      - name: product_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_sellers
+    description: "Cleaned seller records, one row per seller_id."
+    columns:
+      - name: seller_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_order_reviews
+    description: "Customer reviews. Note: review_id is NOT unique in source data."
+    columns:
+      - name: review_id
+        data_tests:
+          - not_null
+      - name: order_id
+        data_tests:
+          - not_null
