@@ -6,6 +6,9 @@ __pycache__/
 # Data — never commit raw data
 *.csv
 
+# ...but DO track seed files
+!olist_analytics/seeds/*.csv
+
 # dbt artifacts
 target/
 dbt_packages/
