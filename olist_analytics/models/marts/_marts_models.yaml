@@ -1,0 +1,351 @@
+version: 2
+
+models:
+  - name: fct_orders
+    description: >
+      Order-grain fact table — one row per order. Combines order header data with
+      aggregated measures from items, payments, and reviews. The spine for all
+      order-level analysis. Carries governance flags (is_delivered, is_canceled)
+      so metrics can filter cleanly without re-deriving status.
+    columns:
+      - name: order_id
+        description: "Primary key. Unique per order. Use this for joins from any item, payment, or review fact."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: customer_id
+        description: >
+          Foreign key to dim_customers. IMPORTANT: customer_id is not the same as
+          a "customer" entity — Olist assigns a new customer_id per order. For counts of
+          distinct people, use customer_unique_id from dim_customers, not customer_id.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+
+      - name: order_status
+        description: "Operational status: delivered, shipped, canceled, unavailable, invoiced, processing, created, or approved. Prefer is_delivered / is_canceled flags for filtering."
+
+      - name: order_purchased_at
+        description: "Timestamp when the order was placed by the customer. The canonical date for time-based revenue analysis (e.g. monthly bookings/revenue use this)."
+
+      - name: order_approved_at
+        description: "Timestamp when payment was approved. Usually within hours of purchase. Null for some canceled orders."
+
+      - name: order_delivered_to_carrier_at
+        description: "Timestamp when the seller handed the order to the logistics carrier. Null if not yet shipped."
+
+      - name: order_delivered_to_customer_at
+        description: "Timestamp when the order reached the customer. Null for orders in transit, canceled, or unavailable. The basis for is_delivered."
+
+      - name: order_estimated_delivery_at
+        description: "Carrier's promised delivery date at time of order. Compare against order_delivered_to_customer_at for on-time analysis."
+
+      - name: item_count
+        description: "Number of line items in this order. Zero for orders with no items (~775 orders, mostly canceled)."
+
+      - name: distinct_product_count
+        description: "Number of distinct products in this order (item_count counts line items including duplicates of the same product)."
+
+      - name: product_revenue
+        description: >
+          Canonical revenue measure for this order. Sum of price across all items;
+          excludes freight. Use this for the standard "revenue" metric. For total
+          transaction value including shipping, use order_total instead.
+
+      - name: freight_total
+        description: "Sum of freight (shipping) charges across items in this order. Customer-paid shipping; not company revenue."
+
+      - name: order_total
+        description: "Total transaction value: product_revenue + freight_total. Use this for gross merchandise value / total amount paid."
+
+      - name: payment_count
+        description: "Number of payment rows for this order. >1 indicates split payments or installments. Null if no payment record exists."
+
+      - name: total_paid
+        description: "Sum of payment_value across all payment rows. Should approximate order_total but may differ due to fees, adjustments, or refunds."
+
+      - name: max_installments
+        description: "Highest number of installments used in any payment for this order. Common values: 1 (no installments), 2-10 (consumer installments)."
+
+      - name: review_count
+        description: "Number of reviews submitted for this order. Usually 0 (no review) or 1. Rarely >1."
+
+      - name: avg_review_score
+        description: "Average review_score (1-5) for this order. Null if no review was submitted."
+
+      - name: days_to_deliver
+        description: >
+          Days between purchase and delivery (order_delivered_to_customer_at - order_purchased_at).
+          Null for undelivered orders. Use this for delivery-time analysis — do not recompute.
+
+      - name: is_delivered
+        description: >
+          TRUE when order_delivered_to_customer_at is not null. The canonical filter
+          for "realized revenue" — use WHERE is_delivered for revenue metrics.
+
+      - name: is_canceled
+        description: >
+          TRUE when order_status = 'canceled'. The canonical filter for excluding
+          canceled orders. Bookings metrics use WHERE NOT is_canceled.
+
+  - name: fct_order_items
+    description: >
+      Line-item-grain fact table — one row per (order_id, order_item_id). The
+      atomic revenue table; sum from here for product-level or category-level
+      revenue. Use fct_orders if you need order-level rollups already computed.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - order_id
+              - order_item_id
+    columns:
+      - name: order_id
+        description: "FK to fct_orders. Multiple rows per order at this grain."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+
+      - name: order_item_id
+        description: "Line number within the order (1, 2, 3...). Not unique on its own — use with order_id."
+        data_tests:
+          - not_null
+
+      - name: product_id
+        description: "FK to dim_products. The product sold on this line."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+
+      - name: seller_id
+        description: "FK to dim_sellers. The seller fulfilling this line item."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_sellers')
+                field: seller_id
+
+      - name: price
+        description: "Product price for this line item. Sum across rows for product-level or category-level revenue."
+
+      - name: freight_value
+        description: "Shipping cost for this line item. Customer-paid; not company revenue."
+
+      - name: item_total
+        description: "price + freight_value. Use sum(item_total) for total transaction value at item grain."
+
+      - name: shipping_limit_date
+        description: "Deadline by which the seller must hand the item to the carrier."
+
+  - name: dim_customers
+    description: >
+      Customer dimension — one row per customer_id. NOTE: Olist assigns a new
+      customer_id per order, so this table has roughly 99k rows but only ~96k
+      distinct customer_unique_id values. For person-level counts, use
+      count(distinct customer_unique_id), not count(*).
+    columns:
+      - name: customer_id
+        description: "Primary key. One row per customer_id. Joins to fct_orders.customer_id."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: customer_unique_id
+        description: >
+          Represents the actual person — one customer_unique_id maps to one or
+          more customer_ids. Use this for entity-level metrics ("how many customers").
+
+      - name: customer_zip_code_prefix
+        description: "First 5 digits of the customer's Brazilian postal code. Not a full zip code."
+
+      - name: customer_city
+        description: "Customer's city (lowercase, Portuguese spelling, e.g. 'sao paulo')."
+
+      - name: customer_state
+        description: "Brazilian state code (e.g. SP, RJ). Joins to dim_geography.state_code for regional analysis."
+
+  - name: dim_products
+    description: >
+      Product dimension — one row per product_id. Categories are translated from
+      Portuguese to English via a seed table; products with missing translations
+      fall back to the Portuguese name, products with no category at all are
+      bucketed as 'unknown'.
+    columns:
+      - name: product_id
+        description: "Primary key. One row per product."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: product_category
+        description: >
+          Canonical category name. English where a translation exists, else
+          Portuguese, else 'unknown'. Use this for category-level analysis.
+
+      - name: product_category_portuguese
+        description: "Original Portuguese category name from source. Kept for traceability; prefer product_category for analysis."
+
+      - name: product_weight_g
+        description: "Product weight in grams."
+
+      - name: product_length_cm
+        description: "Product length in centimeters."
+
+      - name: product_height_cm
+        description: "Product height in centimeters."
+
+      - name: product_width_cm
+        description: "Product width in centimeters."
+
+  - name: dim_sellers
+    description: "Seller dimension — one row per seller_id. 3,095 sellers across Brazilian states."
+    columns:
+      - name: seller_id
+        description: "Primary key. One row per seller."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: seller_zip_code_prefix
+        description: "First 5 digits of the seller's Brazilian postal code."
+
+      - name: seller_city
+        description: "Seller's city (lowercase, Portuguese spelling)."
+
+      - name: seller_state
+        description: "Brazilian state code. Joins to dim_geography.state_code for regional analysis."
+
+  - name: dim_dates
+    description: >
+      Date dimension — one row per calendar date from 2016-01-01 through 2019-12-30.
+      Use this for time-based grouping and labeling. Join your fact's date column
+      (cast to date) to date_day, then group by year_month, year_quarter, etc.
+      for consistent labels across queries.
+    columns:
+      - name: date_day
+        description: "Primary key. One row per date. Join your fact's date column (cast to date) here."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: year_number
+        description: "Calendar year as integer (e.g. 2017)."
+
+      - name: quarter_number
+        description: "Quarter as integer 1-4."
+
+      - name: month_number
+        description: "Month as integer 1-12."
+
+      - name: day_of_month
+        description: "Day within month as integer 1-31."
+
+      - name: day_of_week_number
+        description: "Day of week as integer 0-6 (0=Sunday, 6=Saturday)."
+
+      - name: week_start
+        description: "Date of the Monday starting the week containing this date."
+
+      - name: month_start
+        description: "Date of the first day of the month."
+
+      - name: quarter_start
+        description: "Date of the first day of the quarter."
+
+      - name: year_start
+        description: "January 1 of this date's year."
+
+      - name: year_month
+        description: "String label like '2017-11'. Use this for canonical monthly grouping."
+
+      - name: year_quarter
+        description: "String label like '2017-Q4'. Use this for canonical quarterly grouping."
+
+      - name: month_name
+        description: "Abbreviated month name (Jan, Feb, ...). For display only — group by month_number or year_month."
+
+      - name: day_name
+        description: "Abbreviated day name (Mon, Tue, ...). For display only — group by day_of_week_number."
+
+      - name: is_weekend
+        description: "TRUE for Saturday and Sunday."
+
+      - name: is_month_end
+        description: "TRUE if this is the last day of its month."
+
+      - name: is_quarter_end
+        description: "TRUE if this is the last day of its quarter."
+
+      - name: is_year_end
+        description: "TRUE if December 31."
+
+  - name: dim_geography
+    description: >
+      Brazilian geography dimension — maps state codes to state names and the 5
+      official macro-regions (North, Northeast, Central-West, Southeast, South).
+      Join from customer_state or seller_state for regional analysis.
+    columns:
+      - name: state_code
+        description: "Two-letter Brazilian state code (e.g. SP, RJ). Primary key."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: state_name
+        description: "Full state name in Portuguese (e.g. 'São Paulo')."
+
+      - name: region
+        description: >
+          Brazilian macro-region. One of: North, Northeast, Central-West,
+          Southeast, South. Use this for regional revenue / performance analysis.
+
+  - name: agg_monthly_revenue
+    description: >
+      Pre-aggregated monthly metrics. One row per purchase month. Contains the
+      certified bookings and revenue definitions: bookings = sum(price) for
+      non-canceled orders; revenue = sum(price) for delivered orders only. Use
+      this for monthly trend questions instead of aggregating from fct_orders.
+    columns:
+      - name: purchase_month
+        description: "First day of the month (purchase month, based on order_purchased_at). Primary key."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: bookings
+        description: "Sum of product_revenue for non-canceled orders placed in this month. Represents commitments."
+
+      - name: booking_count
+        description: "Count of non-canceled orders placed in this month."
+
+      - name: revenue
+        description: "Sum of product_revenue for delivered orders placed in this month. Canonical revenue metric."
+
+      - name: delivered_order_count
+        description: "Count of delivered orders placed in this month."
+
+      - name: freight_revenue
+        description: "Sum of freight charges for delivered orders in this month. Customer-paid shipping."
+
+      - name: total_transaction_value
+        description: "Sum of order_total (price + freight) for delivered orders in this month."
+
+      - name: total_order_count
+        description: "Total order count (including canceled). Use booking_count or delivered_order_count for filtered counts."
+
+      - name: canceled_order_count
+        description: "Count of canceled orders placed in this month."
+
+      - name: avg_days_to_deliver
+        description: "Average delivery time across delivered orders placed in this month."
