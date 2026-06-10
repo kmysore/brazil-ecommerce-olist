@@ -20,18 +20,17 @@ Built end-to-end on a real dataset (Olist Brazilian e-commerce, ~100k orders acr
 ---
 
 ## Architecture
-Raw CSVs (Kaggle Olist dataset)
-↓ COPY INTO via Snowflake stages
-OLIST.RAW (9 source tables, plus 2 reference seeds)
-↓ dbt staging — typed, renamed, tested
-OLIST.STAGING (8 staging views)
-↓ dbt marts — joined, aggregated, governed
-OLIST.MARTS
-├─ Facts:       fct_orders, fct_order_items
-├─ Dimensions:  dim_customers, dim_products, dim_sellers, dim_dates, dim_geography
-└─ Aggregates:  agg_monthly_revenue
-↓ MCP server (Python) — governed tool surface
-Claude Desktop — conversational analytics
+
+```mermaid
+flowchart TD
+    A[Raw CSVs - Kaggle Olist dataset] -->|COPY INTO via Snowflake stages| B[OLIST.RAW9 source tables + 2 seeds]
+    B -->|dbt staging: typed, renamed, tested| C[OLIST.STAGING8 staging views]
+    C -->|dbt marts: joined, aggregated, governed| D[OLIST.MARTS]
+    D --> E[Factsfct_orders, fct_order_items]
+    D --> F[Dimensionsdim_customers, dim_products,dim_sellers, dim_dates, dim_geography]
+    D --> G[Aggregatesagg_monthly_revenue]
+    D -->|MCP server: governed tool surface| H[Claude DesktopConversational analytics]
+```
 
 **Tech stack:** Snowflake · dbt (Fusion engine) · Python · MCP · Claude · GitHub
 
@@ -59,6 +58,8 @@ The Python MCP server is deliberately not just a thin Snowflake connector. It ex
 ---
 
 ## Repository structure
+
+```
 brazil-ecommerce-olist/
 ├── data_analysis/          # Exploratory data profiling
 │   └── profile_olist.py
@@ -73,7 +74,8 @@ brazil-ecommerce-olist/
 │   ├── server.py           # MCP server with governance tools
 │   └── requirements.txt
 └── README.md
----
+```
+
 
 ## Running it yourself
 
